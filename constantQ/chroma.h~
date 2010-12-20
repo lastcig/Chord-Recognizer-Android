@@ -1,0 +1,8 @@
+#include "constQ.h"
+
+class Chroma: public ConstQ
+{
+public:
+  Chroma();
+  virtual ~Chroma();
+};

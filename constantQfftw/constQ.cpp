@@ -1,0 +1,312 @@
+/**
+ * @file   constQ.cpp
+ * @author Taemin Cho <taemin@taemin-linux>
+ * @date   Fri Nov 26 06:20:38 2010
+ * 
+ * @brief  Generate Constant Q spectrum from Audio segment
+ * 
+ * 
+ */
+
+//#include <jni.h>
+#include "constQ.h"
+#include <iostream>  
+#include <cstring>
+
+#define ABS(x) sqrt(x.r*x.r+ x.i*x.i)
+/** 
+ * Constructor of ConstQ class
+ * 
+ * Generate sparseKernel under given parameters
+ * 
+ * @param _minNote : lowest pitch to analyze
+ * @param _maxNote : maximum pitch to analyze
+ * @param _bpo : bins per octave
+ * @param _fs : sample rate
+ * @param _thresh : sparseKernel thereshold
+ */
+
+ConstQ::ConstQ(int _minNote, int _maxNote, int _bpo, 
+	       int _fs, double _thresh)
+  :minNote(_minNote), maxNote(_maxNote),
+   bpo(_bpo), fs(_fs), thresh(_thresh)
+{
+  genFilterBanks();
+  //  genSparseKernel();
+}
+
+/** 
+ * Destructor 
+ * 
+ * clear all allocated memory 
+ *
+ */
+
+ConstQ::~ConstQ()
+{
+  fftw_free(cout);
+  fftw_free(fin);
+  fftw_destroy_plan(r2c);
+
+  for (int k=0; k<constQBins; k++){
+    fftw_free(sparkernel[k].cpx);
+  }
+
+  delete []sparkernel;
+}
+
+void ConstQ::genFilterBanks()
+{
+    // get frequencies of min and max Note
+  minFreq = noteNum2Freq((double)minNote);
+  maxFreq = noteNum2Freq((double)maxNote);
+
+  // get Q value and the number of total constant Q bins
+  Q = 1./(pow(2.,(1./bpo)) - 1);
+  int numBanks = ceil(bpo * log(maxFreq/minFreq)/log(2));
+
+  // memory alloc for sparkernel bins
+  filterBank *filterBanks = new filterBank[numBanks];
+
+  fftLength =
+    nextPowerOf2((unsigned int) ceil(Q * fs/minFreq));
+
+  float freqStep = fs/fftLength;
+
+  for (int k = 0; k<numBanks; k++){
+    float center = minFreq * pow((k/bpo),2);
+    float lfreq = center * pow((-1/bpo),2);
+    float ufreq = center * pow((1/bpo),2);
+    int lowerIdx = ceil( lfreq / freqStep);
+    int upperIdx = floor(ufreq / freqStep);
+    filterBanks[k].bank = new float[upperIdx - lowerIdx+1];
+
+    // (log2((lowerIdx:upperIdx) * freqStep) - log2(lfreq)) / (log2(ufreq) -
+    // log2(lfreq));
+    float alpha = 20;
+    for(int i = lowerIdx; i <= upperIdx; i++){
+      float logfreqScale = (log(i * freqStep) - log(lfreq)) 
+	             / (log(ufreq) - log(lfreq));
+    
+    // Gaussian window
+      filterBanks[k].bank[i] = exp(-0.5 * pow((alpha * (logfreqScale - 0.5) * 0.5 ), 2));
+    }
+  }
+}
+
+/** 
+ * Generate sparseKernel
+ * 
+ * @param minNote 
+ * @param maxNote 
+ * @param bpo 
+ * @param fs 
+ * @param thresh 
+ * 
+ * @return 
+ */
+
+void ConstQ::genSparseKernel()
+{
+  // get frequencies of min and max Note
+  minFreq = noteNum2Freq((double)minNote);
+  maxFreq = noteNum2Freq((double)maxNote);
+
+  // get Q value and the number of total constant Q bins
+  Q = 1./(pow(2.,(1./bpo)) - 1);
+  constQBins = ceil(bpo * log(maxFreq/minFreq)/log(2));
+  
+  // memory alloc for sparkernel bins
+  sparkernel = new sparKernel[constQBins];
+  
+  fftLength =
+    nextPowerOf2((unsigned int) ceil(Q * fs/minFreq));
+
+  // fftw setup
+  cin = (fftw_complex *) fftw_malloc(sizeof(fftw_complex) * fftLength);
+  memset(cin, 0, sizeof(fftw_complex) * fftLength);
+  cout = (fftw_complex *) fftw_malloc(sizeof(fftw_complex) * fftLength);
+  c2c = fftw_plan_dft_1d(fftLength, cin, cout, FFTW_FORWARD, FFTW_ESTIMATE);
+
+  fin = (double *) fftw_malloc(sizeof(double) * fftLength);
+  r2c = fftw_plan_dft_r2c_1d(fftLength, fin, cout, FFTW_ESTIMATE);
+
+  for (int k=constQBins; k > 0; k--){
+
+    double centerFreq = (minFreq * pow(2,(double(k-1)/bpo)));
+
+    int upperBound = ceil(centerFreq * pow(2,  1./12) * fftLength/fs);
+    int lowerBound = floor(centerFreq * pow(2, -1./12) * fftLength/fs);
+
+    sparkernel[k-1].s = lowerBound;
+    sparkernel[k-1].e = upperBound;
+    sparkernel[k-1].cpx = (fftw_complex *) 
+      fftw_malloc(sizeof(fftw_complex) * (upperBound - lowerBound));
+  }
+
+  pthread_create(&thread, NULL, ConstQ::sparseKernelThread, this);
+
+  // std::complex <double> *tempKernel;
+  // tempKernel = reinterpret_cast<std::complex <double> *> (cin); 
+
+  // std::complex <double> *specKernel;
+  // specKernel = reinterpret_cast<std::complex <double> *> (cout); 
+
+  // std::complex <double> *sparKernel;
+
+  // for (int k=constQBins; k > 0; k--){
+  //   progress = 1.0/constQBins * (constQBins - k);
+
+  //   double centerFreq = (minFreq * pow(2,(double(k-1)/bpo)));
+  //   int length = ceil(Q * fs / centerFreq);
+
+  //   for(int n=0; n<length; n++){
+  //     std::complex <double> cpx(0, (2*M_PI*Q*n/length));
+  //     cpx = exp(cpx);
+  //     double hwin = hamming(n, length) / length;
+  //     tempKernel[n] = hwin * cpx;
+  //   }
+
+  //   fftw_execute(c2c);
+
+  //   int upperBound = ceil(centerFreq * pow(2,  1./12) * fftLength/fs);
+  //   int lowerBound = floor(centerFreq * pow(2, -1./12) * fftLength/fs);
+
+  //   sparkernel[k-1].s = lowerBound;
+  //   sparkernel[k-1].e = upperBound;
+  //   sparkernel[k-1].cpx = (fftw_complex *) 
+  //     fftw_malloc(sizeof(fftw_complex) * (upperBound - lowerBound));
+
+  //   sparKernel = 
+  //     reinterpret_cast<std::complex <double> *> (sparkernel[k-1].cpx);
+
+  //   // cut under the threshold, Conjugate and scaling
+  //   for(int i=lowerBound; i<upperBound; i++){
+  //     if (abs(specKernel[i]) > thresh)
+  // 	sparKernel[i-lowerBound] = conj(specKernel[i] / (double)fftLength);
+  //     else
+  // 	sparKernel[i-lowerBound] = 0;
+  //   }
+
+  // }
+  
+  // fftw_destroy_plan(c2c); // no more needed
+  // progress = 1.0;
+
+}
+
+void *ConstQ::sparseKernelThread(void *arg)
+{
+  ConstQ *This = (ConstQ*) arg;
+
+  double _fftLength = (double) This->fftLength;
+  int _constQBins = This->constQBins;
+  int _Q = This->Q;
+  double _minFreq = This->minFreq;
+  int _fs = This->fs;
+  double _thresh = This->thresh;
+  int _bpo = This->bpo;
+
+  // std::complex <double> *tempKernel
+  //   = reinterpret_cast<std::complex <double> *> (This->cin); 
+
+  complex_t *tempKernel = (complex_t *) This->cin;
+
+  //double *tempKernel = (double *) This->cin;
+
+  // complex_t *specKernel = (complex_t*) This->cout; 
+
+  std::complex <double> *specKernel;
+  specKernel = reinterpret_cast<std::complex <double> *> (This->cout); 
+
+  for (int k=_constQBins; k > 0; k--){
+    This->progress = 1.0/_constQBins * (_constQBins - k);
+
+    double centerFreq = (_minFreq * pow(2,(double(k-1)/_bpo)));
+    int length = ceil(_Q * _fs / centerFreq);
+
+    for(int n=0; n<length; n++){
+      double hwin = This->hamming(n, length) / length;
+      tempKernel[n].r = hwin * cos(2*M_PI*_Q*n/length);
+      tempKernel[n].i = hwin * sin(2*M_PI*_Q*n/length);
+    }
+
+    fftw_execute(This->c2c);
+
+    int upperBound = This->sparkernel[k-1].e;
+    int lowerBound = This->sparkernel[k-1].s;
+
+    std::complex <double> *sparKernel;
+    sparKernel = 
+      reinterpret_cast<std::complex <double> *> (This->sparkernel[k-1].cpx);
+
+    // cut under the threshold, Conjugate and scaling
+    for(int i=lowerBound; i<upperBound; i++){
+      if (abs(specKernel[i]) > _thresh)
+    	sparKernel[i-lowerBound] = conj(specKernel[i] / _fftLength);
+      else
+    	sparKernel[i-lowerBound] = 0;
+    }
+
+    // complex_t *kernel = (complex_t *) This->sparkernel[k-1].cpx;
+
+    // // cut under the threshold, Conjugate and scaling
+    // for(int i=lowerBound; i<upperBound; i++){
+    //   int idx = i-lowerBound;
+    //   if (ABS(specKernel[i]) > _thresh){
+    // 	kernel[idx].r = specKernel[i].r / _fftLength;
+    // 	kernel[idx].i = - specKernel[i].i / _fftLength; // Conjugate
+    //   }
+    //   else{
+    // 	kernel[idx].r = 0;
+    // 	kernel[idx].i = 0;
+    //   }
+    // }
+
+  }
+  
+  fftw_destroy_plan(This->c2c); // no more needed
+  This->progress = 1.0;
+
+  return NULL;
+}
+
+
+/** 
+ * generate Constant Q spectrum from audio segment
+ * 
+ * @param samples : pointer of segmented audio signal
+ * @param numSample : number of audio samples in the segment
+ * @param constQSpec : 
+ */
+
+
+void ConstQ::genConstantQspec(double *samples, 
+			      int numSample, double *constQSpec)
+{
+  // clean input memory for zero padding 
+  memset(fin, 0, fftLength * sizeof(double));
+  std::memcpy(fin, samples, numSample * sizeof(double));  
+  
+  // fft calculate
+  fftw_execute(r2c);
+
+  std::complex <double> *freqData;
+  freqData = 
+    reinterpret_cast<std::complex <double> *> (cout);
+    
+  for(int n=0; n<constQBins; n++){
+    std::complex <double> *kernel;
+    kernel = 
+      reinterpret_cast<std::complex <double> *> (sparkernel[n].cpx);
+
+    std::complex <double> temp(0, 0);
+
+    for(int i = sparkernel[n].s; i< sparkernel[n].e; i++){
+      temp += kernel[i-sparkernel[n].s] * freqData[i];
+    }
+
+    constQSpec[n] = abs(temp);
+  }
+
+}

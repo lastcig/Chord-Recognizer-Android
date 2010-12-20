@@ -9,26 +9,29 @@
  */
 
 #include <math.h>
-#include "kiss_fft.h"
-#include "kiss_fftr.h"
 #include <pthread.h>
+#include <complex>
+#include "fftw3.h"
 
 typedef struct
 {
-  kiss_fft_cpx *cpx;
+  fftw_complex *cpx;
   int s;
   int e;
 }sparKernel;
 
 typedef struct
 {
-  int minNote;
-  int maxNote;
-  int bpo;
-  int fs;
-  float thresh;
-}constQparm;
+  float *bank;
+  int s;
+  int e;
+}filterBank;
 
+typedef struct
+{
+  double r;
+  double i;
+}complex_t;
 
 class ConstQ
 {
@@ -37,20 +40,19 @@ class ConstQ
   const int maxNote;
   const int bpo;
   const int fs;
-  const float thresh;
+  const double thresh;
 
-  static const double pi=
-    3.141592653589793238462643383279502884197169399375105820974944;
-
-  kiss_fft_cfg fft;
-  kiss_fftr_cfg fftr;
+  fftw_complex *cin, *cout;
+  double *fin;
+  fftw_plan c2c, r2c;
 
   int constQBins;
   int Q;
   double minFreq;
   double maxFreq;
-  float progress;
+  double progress;
 
+  filterBank *filterbanks;
   sparKernel *sparkernel;
   unsigned int fftLength;
   pthread_t thread;
@@ -59,7 +61,7 @@ class ConstQ
   static void *sparseKernelThread(void *arg);
   void genSparseKernel();
 
-  inline double noteNum2Freq(float noteNum) {
+  inline double noteNum2Freq(double noteNum) {
     return 440 * pow(2.0, (noteNum - 69)/12.0);
   }
 
@@ -79,25 +81,13 @@ class ConstQ
 
   inline double hamming(int n, int N)
   {
-      return 0.54 - 0.46 * cos(2*pi*n/(N-1));
-  }
-  
-  inline kiss_fft_cpx e(float x)
-  {
-    kiss_fft_cpx y;
-    y.r = cos(x);
-    y.i = sin(x);
-    return y;
+    return (double) 0.54 - 0.46 * cos(2*M_PI*n/(N-1));
   }
 
-  inline double mag(kiss_fft_cpx x)
-  {
-    return sqrt(pow(x.r,2) + pow(x.i,2));
-  }
-
+  void genFilterBanks();  
  public:
   ConstQ(int _minNote=21, int _maxNote=88, int _bpo=36, 
-	 int _fs=44100, float _thresh=0.0054);
+	 int _fs=44100, double _thresh=0.0054);
 
   virtual ~ConstQ();
   
@@ -106,14 +96,13 @@ class ConstQ
   int getBPO() { return bpo; }
   int getMaxNote() { return maxNote; }
   int getMinNote() { return minNote; }
-  float getKernelProgress() { return progress;};
+  double getKernelProgress() { return progress;};
   pthread_t getThread() { return thread; }
   unsigned int getFFTLength(){ return fftLength; }
 
   
-  void genConstantQspec(kiss_fft_scalar *samples,
-			int numSample, float *constQSpec);
-
+  void genConstantQspec(double *samples,
+			int numSample, double *constQSpec);
 
 
 };

@@ -9,26 +9,29 @@
  */
 
 #include <math.h>
-#include "kiss_fft.h"
-#include "kiss_fftr.h"
 #include <pthread.h>
+#include <complex>
+#include "fftw3.h"
 
 typedef struct
 {
-  kiss_fft_cpx *cpx;
+  fftwf_complex *cpx;
   int s;
   int e;
 }sparKernel;
 
 typedef struct
 {
-  int minNote;
-  int maxNote;
-  int bpo;
-  int fs;
-  float thresh;
-}constQparm;
+  float *bank;
+  int s;
+  int e;
+}filterBank;
 
+typedef struct
+{
+  float r;
+  float i;
+}complex_t;
 
 class ConstQ
 {
@@ -39,11 +42,9 @@ class ConstQ
   const int fs;
   const float thresh;
 
-  static const double pi=
-    3.141592653589793238462643383279502884197169399375105820974944;
-
-  kiss_fft_cfg fft;
-  kiss_fftr_cfg fftr;
+  fftwf_complex *cin, *cout;
+  float *fin;
+  fftwf_plan c2c, r2c;
 
   int constQBins;
   int Q;
@@ -51,13 +52,16 @@ class ConstQ
   double maxFreq;
   float progress;
 
+  filterBank *filterbanks;
   sparKernel *sparkernel;
+  bool isKernelUsed;
   unsigned int fftLength;
   pthread_t thread;
-
-
+  
   static void *sparseKernelThread(void *arg);
   void genSparseKernel();
+
+  void genFilterBanks();  
 
   inline double noteNum2Freq(float noteNum) {
     return 440 * pow(2.0, (noteNum - 69)/12.0);
@@ -77,24 +81,11 @@ class ConstQ
     return n;
   }   
 
-  inline double hamming(int n, int N)
+  inline float hamming(int n, int N)
   {
-      return 0.54 - 0.46 * cos(2*pi*n/(N-1));
+    return (float) 0.54 - 0.46 * cos(2*M_PI*n/(N-1));
   }
   
-  inline kiss_fft_cpx e(float x)
-  {
-    kiss_fft_cpx y;
-    y.r = cos(x);
-    y.i = sin(x);
-    return y;
-  }
-
-  inline double mag(kiss_fft_cpx x)
-  {
-    return sqrt(pow(x.r,2) + pow(x.i,2));
-  }
-
  public:
   ConstQ(int _minNote=21, int _maxNote=88, int _bpo=36, 
 	 int _fs=44100, float _thresh=0.0054);
@@ -111,9 +102,8 @@ class ConstQ
   unsigned int getFFTLength(){ return fftLength; }
 
   
-  void genConstantQspec(kiss_fft_scalar *samples,
+  void genConstantQspec(float *samples,
 			int numSample, float *constQSpec);
-
 
 
 };

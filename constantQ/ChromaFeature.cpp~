@@ -1,0 +1,11 @@
+#include "chroma.h"
+
+JNIEXPORT jlong JNICALL Java_com_taemincho_feature_Chroma_create
+(JNIEnv *, jobject, jint minNote, jint maxNote, jint bpo, jint fs, jfloat thresh){
+  
+}
+
+JNIEXPORT void JNICALL Java_com_taemincho_feature_Chroma_genChroma
+(JNIEnv *, jobject, jlong handle, jfloatArray samples, jint numSample, jfloatArray chroma){
+  float *source = (float*)env->GetFloatArrayElements(samples, NULL);
+}
